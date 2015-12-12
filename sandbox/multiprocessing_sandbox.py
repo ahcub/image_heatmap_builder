@@ -1,6 +1,6 @@
+import time
 from multiprocessing import Pool
 from random import randint
-import time
 
 
 def func(x):
