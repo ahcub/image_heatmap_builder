@@ -1,12 +1,17 @@
 import sys
 from glob import glob
+from multiprocessing import Pool
+from time import sleep
 
 from PyQt4 import QtGui
 from os.path import join, splitext, basename
 
+from src.heatmap_utils import build_heatmap_on_image
+
 
 class ImageHeatMapBuilder:
     def __init__(self):
+        self.app = None
         self.main_window = None
         self.progress_bar = None
         self.pictures_dir = ''
@@ -14,7 +19,7 @@ class ImageHeatMapBuilder:
         self.output_dir = ''
 
     def start(self):
-        app = QtGui.QApplication(sys.argv)
+        self.app = QtGui.QApplication(sys.argv)
         self.main_window = QtGui.QWidget()
         main_layout = QtGui.QVBoxLayout()
 
@@ -37,7 +42,7 @@ class ImageHeatMapBuilder:
         self.main_window.setWindowTitle('Image heatmap builder')
         self.main_window.setLayout(main_layout)
         self.main_window.show()
-        sys.exit(app.exec_())
+        sys.exit(self.app.exec_())
 
     def get_selection_elements(self, label_text, property_name):
         label = QtGui.QLabel('%s:' % label_text)
@@ -57,12 +62,39 @@ class ImageHeatMapBuilder:
 
     def build_heatmaps(self):
         # TODO: add check for valid directories
-        tasks_data_sets = []
+        # TODO: setup global lock for running heatmaps construction
+        tasks_pool = Pool()
+        tasks_registry = []
         for image_file in glob(join(self.pictures_dir, '*.png')):
-            #TODO: add check for picture data exists
-            data_file_name = splitext(basename(image_file))[0] + '.csv'
-            data_file_path = join(self.pictures_data_dir, data_file_name)
-            tasks_data_sets.append((image_file, ))
+            # TODO: add check for picture data exists
+            # TODO: check is output directory exists
+            image_file_name_base, image_file_ext = splitext(basename(image_file))
+            data_file_path = join(self.pictures_data_dir, image_file_name_base + '.csv')
+            output_file_path = join(self.output_dir, image_file_name_base + '_with_heatmap' + image_file_ext)
+            async_result = tasks_pool.apply_async(build_heatmap_on_image, (image_file, data_file_path, output_file_path))
+            tasks_registry.append((async_result, image_file))
+
+        self.progress_bar.setMaximum(len(tasks_registry))
+        errors = []
+        all_tasks_done = False
+        while not all_tasks_done:
+            all_tasks_done = True
+            not_completed_tasks = []
+            for task, image_file in tasks_registry:
+                if task.read():
+                    try:
+                        task.get()
+                    except Exception as e:
+                        errors.append('Failed to build heatmap for %s' % image_file)
+                        # TODO: log error reason
+                    else:
+                        self.progress_bar.setValue(self.progress_bar.value + 1)
+                else:
+                    not_completed_tasks.append((task, image_file))
+                    all_tasks_done = False
+                self.app.processEvents()
+                sleep(0.05)
+            tasks_registry = not_completed_tasks
 
 
 def create_grid_layout(elements_groups):

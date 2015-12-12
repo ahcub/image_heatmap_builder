@@ -4,7 +4,7 @@ import Image
 from heatmap import Heatmap
 
 
-def build_heatmap_on_image(image_path, outfile_path, data_file_path, save_only_heatmap=False):
+def build_heatmap_on_image(image_path, data_file_path, outfile_path, save_only_heatmap=False):
     img = Image.open(image_path)
     hm = Heatmap()
     coordinates = read_coordinates(data_file_path)
