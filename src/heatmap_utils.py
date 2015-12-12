@@ -1,6 +1,6 @@
 import csv
 
-import Image
+from PIL import Image
 from heatmap import Heatmap
 
 
