@@ -93,6 +93,8 @@ class ImageHeatMapBuilder:
         def callback():
             if getter == 'dialog':
                 directory = QtGui.QFileDialog().getExistingDirectory(self.main_window)
+                if not directory:
+                    return
                 line_edit_widget.setText(directory)
             else:
                 directory = line_edit_widget.text()

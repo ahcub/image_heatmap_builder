@@ -1,5 +1,6 @@
 import sys
 from distutils.core import setup
+import py2exe
 from glob import glob
 from os.path import join, dirname
 
