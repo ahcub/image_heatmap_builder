@@ -1,20 +1,16 @@
-# TODO: create exe file
 import sys
 from glob import glob
 from logging import getLogger
-from multiprocessing import Pool
 from os.path import join, splitext, basename, isfile, isdir, dirname
-from time import sleep
 
 from PyQt4 import QtGui
-from armory.os_utils.logging_utils import configure_file_and_stream_logger, configure_file_logger
-from armory.os_utils.path import mkpath
 
 from src.heatmap_utils import build_heatmap_on_image
+from src.opeational_utils import configure_file_and_stream_logger, configure_file_logger, mkpath
 
 SLEEP_TIME = 0.05
 WINDOW_HEIGHT = 200
-WINDOW_WIDTH = 500
+WINDOW_WIDTH = 600
 
 logger = getLogger()
 
@@ -28,6 +24,7 @@ class ImageHeatMapBuilder:
     def __init__(self):
         self.app = None
         self.main_window = None
+        self.main_layout = None
         self.progress_bar = None
         self.error_dialog = None
         self.building_heatmaps = False
@@ -47,30 +44,39 @@ class ImageHeatMapBuilder:
         self.app = QtGui.QApplication(sys.argv)
         self.main_window = QtGui.QWidget()
         self.main_window.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        main_layout = QtGui.QVBoxLayout()
-        self.error_dialog = QtGui.QErrorMessage(self.main_window)
+        self.main_layout = QtGui.QVBoxLayout()
+        self.error_dialog = QtGui.QErrorMessage()
         elements_groups = [
             self.get_selection_elements('Images folder', 'images_dir'),
             self.get_selection_elements('Images data folder', 'images_data_dir'),
             self.get_selection_elements('Output folder', 'output_dir'),
         ]
 
-        main_layout.addLayout(create_grid_layout(elements_groups))
+        self.main_layout.addLayout(create_grid_layout(elements_groups))
 
         build_heatmaps_btn = QtGui.QPushButton('Build heatmaps')
         build_heatmaps_btn.clicked.connect(self.build_heatmaps)
-        main_layout.addWidget(build_heatmaps_btn)
+        self.main_layout.addWidget(build_heatmaps_btn)
 
         self.progress_bar = QtGui.QProgressBar()
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(1)
         self.progress_bar.setValue(0)
-        main_layout.addWidget(self.progress_bar)
+        self.main_layout.addWidget(self.progress_bar)
 
         self.main_window.setWindowTitle('Image heatmap builder')
-        self.main_window.setLayout(main_layout)
+        self.app.setWindowIcon(QtGui.QIcon(join(dirname(sys.argv[0]), 'heatmap_icon.png')))
+        self.main_window.setLayout(self.main_layout)
         self.main_window.show()
+        self.app.aboutToQuit.connect(self.cleanup_dialog_obj)
         sys.exit(self.app.exec_())
+
+    def cleanup_dialog_obj(self):
+        while self.main_layout.count():
+            item = self.main_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
 
     def get_selection_elements(self, label_text, property_name):
         label = QtGui.QLabel('%s:' % label_text)
@@ -101,9 +107,7 @@ class ImageHeatMapBuilder:
             self.building_heatmaps = True
             try:
                 if self.valid_directories():
-                    tasks_registry = self.get_tasks_jobs()
-                    self.progress_bar.setMaximum(len(tasks_registry))
-                    errors = self.handle_tasks_execution(tasks_registry)
+                    errors = self.build_images_heatmaps()
                     if errors:
                         self.process_tasks_errors(errors)
             finally:
@@ -146,51 +150,31 @@ class ImageHeatMapBuilder:
         return True
 
     def get_images(self):
-        return glob(join(self.images_dir, '*.png'))
-    
+        return list(glob(join(self.images_dir, '*.png')))
+
     def get_image_related_paths(self, image_file):
         image_file_name_base, image_file_ext = splitext(basename(image_file))
         data_file_path = join(self.images_data_dir, image_file_name_base + '.csv')
         output_file_path = join(self.output_dir, image_file_name_base + '_with_heatmap' + image_file_ext)
         return data_file_path, output_file_path
 
-    def get_tasks_jobs(self):
-        tasks_pool = Pool()
-        tasks_registry = []
+    def build_images_heatmaps(self):
+        errors = []
         mkpath(self.output_dir)
-        for image_file in self.get_images():
+        images = self.get_images()
+        self.progress_bar.setMaximum(len(images))
+        for index, image_file in enumerate(images):
             data_file_path, output_file_path = self.get_image_related_paths(image_file)
             logger.info('Starting task for %s' % image_file)
-            async_result = tasks_pool.apply_async(build_heatmap_on_image,
-                                                  (image_file, data_file_path, output_file_path))
-            tasks_registry.append((async_result, image_file))
-
-        return tasks_registry
-
-    def handle_tasks_execution(self, tasks_registry):
-        errors = []
-        all_tasks_done = False
-        completed_tasks_counter = 0
-        while not all_tasks_done:
-            all_tasks_done = True
-            not_completed_tasks = []
-            for task, image_file in tasks_registry:
-                if task.ready():
-                    try:
-                        task.get()
-                    except Exception as e:
-                        errors.append('Failed to build heatmap for %s. Error message: %s' % (image_file, e))
-                    else:
-                        logger.info('creation heatmap for %s is complete' % image_file)
-                    finally:
-                        completed_tasks_counter += 1
-                        self.progress_bar.setValue(completed_tasks_counter)
-                else:
-                    not_completed_tasks.append((task, image_file))
-                    all_tasks_done = False
+            try:
+                build_heatmap_on_image(image_file, data_file_path, output_file_path)
+            except Exception as e:
+                errors.append('Failed to build heatmap for %s. Error message: %s' % (image_file, e))
+            else:
+                logger.info('creation heatmap for %s is complete' % image_file)
+            finally:
+                self.progress_bar.setValue(index + 1)
                 self.app.processEvents()
-                sleep(SLEEP_TIME)
-            tasks_registry = not_completed_tasks
         return errors
 
     def process_tasks_errors(self, errors):
@@ -212,12 +196,6 @@ def create_grid_layout(elements_groups):
         for col_index, element in enumerate(elements_group):
             grid_layout.addWidget(element, row_index, col_index)
     return grid_layout
-
-if __name__ == '__main__':
-    image_heat_map_builder = ImageHeatMapBuilder()
-    image_heat_map_builder.start()
-
-
 
 # TODO: TEST PLAN
 # Error messages
