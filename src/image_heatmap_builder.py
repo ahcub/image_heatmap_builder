@@ -8,25 +8,37 @@ from PyQt4 import QtGui
 from src.heatmap_utils import build_heatmap_on_image
 from src.opeational_utils import configure_file_and_stream_logger, configure_file_logger, mkpath
 
-SLEEP_TIME = 0.05
 WINDOW_HEIGHT = 200
 WINDOW_WIDTH = 600
+
+DEFAULT_HEAT_DOT_SIZE = 60
+DEFAULT_HEAT_DOT_OPACITY = 128
 
 logger = getLogger()
 
 main_log_path = join(dirname(sys.argv[0]), 'image_heatmap_builder.log')
-configure_file_and_stream_logger(filename=main_log_path)
+configure_file_and_stream_logger(filename=main_log_path, level='INFO')
 errors_log_path = join(dirname(sys.argv[0]), 'errors.log')
 configure_file_logger(errors_log_path, level='ERROR')
 
 
 class ImageHeatMapBuilder:
     def __init__(self):
-        self.app = None
-        self.main_window = None
-        self.main_layout = None
-        self.progress_bar = None
-        self.error_dialog = None
+        self.app = QtGui.QApplication(sys.argv)
+        self.app.setWindowIcon(QtGui.QIcon(join(dirname(sys.argv[0]), 'heatmap_icon.png')))
+        self.main_window = QtGui.QWidget()
+        self.main_window.setWindowTitle('Image heatmap builder')
+        self.main_layout = QtGui.QVBoxLayout()
+        self.progress_bar = QtGui.QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(1)
+        self.progress_bar.setValue(0)
+        self.message_dialog = QtGui.QErrorMessage()
+        self.dot_size_spin_box = QtGui.QSpinBox()
+        self.monochrome_check_box = QtGui.QCheckBox()
+        self.exclude_radius_spin_box = QtGui.QSpinBox()
+        self.near_points_amount_spin_box = QtGui.QSpinBox()
+
         self.building_heatmaps = False
 
         self.images_dir = ''
@@ -41,11 +53,7 @@ class ImageHeatMapBuilder:
         open(errors_log_path, 'w').close()
 
     def start(self):
-        self.app = QtGui.QApplication(sys.argv)
-        self.main_window = QtGui.QWidget()
         self.main_window.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.main_layout = QtGui.QVBoxLayout()
-        self.error_dialog = QtGui.QErrorMessage()
         elements_groups = [
             self.get_selection_elements('Images folder', 'images_dir'),
             self.get_selection_elements('Images data folder', 'images_data_dir'),
@@ -53,30 +61,50 @@ class ImageHeatMapBuilder:
         ]
 
         self.main_layout.addLayout(create_grid_layout(elements_groups))
-
+        heatmap_customisation_layout = self.get_heatmap_customisation_panel()
+        self.main_layout.addLayout(heatmap_customisation_layout)
         build_heatmaps_btn = QtGui.QPushButton('Build heatmaps')
         build_heatmaps_btn.clicked.connect(self.build_heatmaps)
         self.main_layout.addWidget(build_heatmaps_btn)
 
-        self.progress_bar = QtGui.QProgressBar()
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(1)
-        self.progress_bar.setValue(0)
         self.main_layout.addWidget(self.progress_bar)
-
-        self.main_window.setWindowTitle('Image heatmap builder')
-        self.app.setWindowIcon(QtGui.QIcon(join(dirname(sys.argv[0]), 'heatmap_icon.png')))
         self.main_window.setLayout(self.main_layout)
         self.main_window.show()
         self.app.aboutToQuit.connect(self.cleanup_dialog_obj)
         sys.exit(self.app.exec_())
 
+    def get_heatmap_customisation_panel(self):
+        heatmap_customisation_layout = QtGui.QHBoxLayout()
+
+        spin_box_lable = QtGui.QLabel('Heat dot size:')
+        self.dot_size_spin_box.setMinimum(20)
+        self.dot_size_spin_box.setMaximum(300)
+        self.dot_size_spin_box.setValue(DEFAULT_HEAT_DOT_SIZE)
+        heatmap_customisation_layout.addWidget(spin_box_lable)
+        heatmap_customisation_layout.addWidget(self.dot_size_spin_box)
+
+        monochrome_lable = QtGui.QLabel('Monochrome image:')
+        heatmap_customisation_layout.addWidget(monochrome_lable)
+        heatmap_customisation_layout.addWidget(self.monochrome_check_box)
+
+        exclude_label = QtGui.QLabel('Radius for single point to exclude:')
+        self.exclude_radius_spin_box.setMinimum(0)
+        self.exclude_radius_spin_box.setMaximum(10000)
+        self.exclude_radius_spin_box.setValue(0)
+        heatmap_customisation_layout.addWidget(exclude_label)
+        heatmap_customisation_layout.addWidget(self.exclude_radius_spin_box)
+
+        near_points_label = QtGui.QLabel('Required near points:')
+        self.near_points_amount_spin_box.setMinimum(0)
+        self.near_points_amount_spin_box.setMaximum(10000)
+        self.near_points_amount_spin_box.setValue(0)
+        heatmap_customisation_layout.addWidget(near_points_label)
+        heatmap_customisation_layout.addWidget(self.near_points_amount_spin_box)
+
+        return heatmap_customisation_layout
+
     def cleanup_dialog_obj(self):
-        while self.main_layout.count():
-            item = self.main_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
+        cleanup_layout_elements(self.main_layout)
 
     def get_selection_elements(self, label_text, property_name):
         label = QtGui.QLabel('%s:' % label_text)
@@ -112,10 +140,12 @@ class ImageHeatMapBuilder:
                     errors = self.build_images_heatmaps()
                     if errors:
                         self.process_tasks_errors(errors)
+                    else:
+                        self.message_dialog.showMessage('Successfully finished building heatmaps')
             finally:
                 self.building_heatmaps = False
         else:
-            self.error_dialog.showMessage('Building heatmaps already started')
+            self.message_dialog.showMessage('Building heatmaps already started')
 
     def valid_directories(self):
         errors = []
@@ -169,15 +199,24 @@ class ImageHeatMapBuilder:
             data_file_path, output_file_path = self.get_image_related_paths(image_file)
             logger.info('Starting task for %s' % image_file)
             try:
-                build_heatmap_on_image(image_file, data_file_path, output_file_path)
+
+                build_heatmap_on_image(image_file, data_file_path, output_file_path, self.get_heatmap_settings())
             except Exception as e:
                 errors.append('Failed to build heatmap for %s. Error message: %s' % (image_file, e))
+                logger.exception('Failed to build heatmap for %s', image_file)
             else:
                 logger.info('creation heatmap for %s is complete' % image_file)
             finally:
                 self.progress_bar.setValue(index + 1)
                 self.app.processEvents()
         return errors
+
+    def get_heatmap_settings(self):
+        heatmap_settings = {'dotsize': self.dot_size_spin_box.value(),
+                            'monochrome_image': self.monochrome_check_box.isChecked(),
+                            'single_point_exclude_radius': self.exclude_radius_spin_box.value(),
+                            'required_near_points_in_radius': self.near_points_amount_spin_box.value()}
+        return heatmap_settings
 
     def process_tasks_errors(self, errors):
         error_message = 'Error occurred while creating heatmaps'
@@ -186,7 +225,7 @@ class ImageHeatMapBuilder:
         else:
             error_message += '<br>'
             error_message += '<br>'.join(errors)
-        self.error_dialog.showMessage(error_message)
+        self.message_dialog.showMessage(error_message)
         logger.info('Error occurred while creating heatmaps')
         for err in errors:
             logger.error(err)
@@ -198,6 +237,18 @@ def create_grid_layout(elements_groups):
         for col_index, element in enumerate(elements_group):
             grid_layout.addWidget(element, row_index, col_index)
     return grid_layout
+
+
+def cleanup_layout_elements(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        item_layout = item.layout()
+        if item_layout:
+            cleanup_layout_elements(item_layout)
+        widget = item.widget()
+        if widget:
+            widget.deleteLater()
+
 
 # TODO: TEST PLAN
 # Error messages
@@ -211,3 +262,7 @@ def create_grid_layout(elements_groups):
 # HeatMaps
 #   heatmaps built properly for all images
 #
+
+if __name__ == '__main__':
+    image_heat_map_builder = ImageHeatMapBuilder()
+    image_heat_map_builder.start()
